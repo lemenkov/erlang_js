@@ -23,6 +23,16 @@
 #include "spidermonkey.h"
 #include "erl_compatibility.h"
 
+#define JS_SET_RVAL(cx,vp,v)    (*(vp) = (v))
+
+#ifndef JSVERSION_LATEST
+#define JSVERSION_LATEST JSVERSION_1_7
+#endif
+
+#ifndef JSFUN_FAST_NATIVE
+#define JSFUN_FAST_NATIVE JSFUN_INTERPRETED
+#endif
+
 void free_error(spidermonkey_state *state);
 
 /* The class of the global object. */
@@ -108,12 +118,11 @@ void write_timestamp(FILE *fd) {
           tmp->tm_hour, tmp->tm_min, tmp->tm_sec);
 }
 
-JSBool js_log(JSContext *cx, uintN argc, jsval *vp) {
+JSBool js_log(JSContext *cx, JSObject *obj, uintN argc, jsval *argv, jsval *vp) {
   if (argc != 2) {
     JS_SET_RVAL(cx, vp, JSVAL_FALSE);
   }
   else {
-    jsval *argv = JS_ARGV(cx, vp);
     jsval jsfilename = argv[0];
     jsval jsoutput = argv[1];
     char *filename = JS_GetStringBytes(JS_ValueToString(cx, jsfilename));
@@ -134,7 +143,7 @@ JSBool js_log(JSContext *cx, uintN argc, jsval *vp) {
 }
 
 void sm_configure_locale(void) {
-  JS_SetCStringsAreUTF8();
+	return;
 }
 
 spidermonkey_vm *sm_initialize(long thread_stack, long heap_size) {
@@ -148,7 +157,6 @@ spidermonkey_vm *sm_initialize(long thread_stack, long heap_size) {
   JS_SetGCParameter(vm->runtime, JSGC_MAX_BYTES, heap_size);
   JS_SetGCParameter(vm->runtime, JSGC_MAX_MALLOC_BYTES, gc_size);
   vm->context = JS_NewContext(vm->runtime, 8192);
-  JS_SetScriptStackQuota(vm->context, thread_stack);
 
   begin_request(vm);
   JS_SetOptions(vm->context, JSOPTION_VAROBJFIX);
