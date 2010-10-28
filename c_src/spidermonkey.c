@@ -23,6 +23,9 @@
 
 void free_error(spidermonkey_state *state);
 
+#define JS_SET_RVAL(cx,vp,v)    (*(vp) = (v))
+#define JS_ARGV(cx,vp)          ((vp) + 2)
+
 /* The class of the global object. */
 static JSClass global_class = {
     "global", JSCLASS_GLOBAL_FLAGS,
@@ -132,7 +135,7 @@ JSBool js_log(JSContext *cx, uintN argc, jsval *vp) {
 }
 
 void sm_configure_locale() {
-  JS_SetCStringsAreUTF8();
+	return;
 }
 
 spidermonkey_vm *sm_initialize(long thread_stack, long heap_size) {
@@ -146,13 +149,12 @@ spidermonkey_vm *sm_initialize(long thread_stack, long heap_size) {
   JS_SetGCParameter(vm->runtime, JSGC_MAX_BYTES, heap_size);
   JS_SetGCParameter(vm->runtime, JSGC_MAX_MALLOC_BYTES, gc_size);
   vm->context = JS_NewContext(vm->runtime, 8192);
-  JS_SetScriptStackQuota(vm->context, thread_stack);
 
   begin_request(vm);
   JS_SetOptions(vm->context, JSOPTION_VAROBJFIX);
   JS_SetOptions(vm->context, JSOPTION_STRICT);
   JS_SetOptions(vm->context, JSOPTION_COMPILE_N_GO);
-  JS_SetOptions(vm->context, JSVERSION_LATEST);
+  JS_SetOptions(vm->context, JSVERSION_1_7);
   vm->global = JS_NewObject(vm->context, &global_class, NULL, NULL);
   JS_InitStandardClasses(vm->context, vm->global);
   JS_SetErrorReporter(vm->context, on_error);
@@ -160,7 +162,7 @@ spidermonkey_vm *sm_initialize(long thread_stack, long heap_size) {
   JS_SetContextPrivate(vm->context, state);
   JSNative *funptr = (JSNative *) *js_log;
   JS_DefineFunction(vm->context, JS_GetGlobalObject(vm->context), "ejsLog", funptr,
-		    0, JSFUN_FAST_NATIVE);
+		    0, JSFUN_INTERPRETED);
   end_request(vm);
 
   return vm;
