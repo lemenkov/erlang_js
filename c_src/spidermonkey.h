@@ -16,7 +16,8 @@
 #ifndef __SPIDERMONKEY_INTERFACE_
 #define __SPIDERMONKEY_INTERFACE_
 
-#include "jsapi.h"
+#include <jsapi.h>
+#include <jsfun.h>
 
 typedef struct _spidermonkey_error_t {
   unsigned int lineno;
