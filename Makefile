@@ -9,7 +9,7 @@ clean:
 	./rebar clean
 	cd c_src; $(MAKE) clean
 
-test: all
+test:
 	@mkdir -p tests_ebin
 	@cd tests;erl -make
 	@erl -noshell -boot start_sasl -pa ebin -pa tests_ebin -s erlang_js -eval 'test_suite:test().' -s init stop
