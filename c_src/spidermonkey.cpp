@@ -292,23 +292,20 @@ char *sm_eval(spidermonkey_vm *vm, const char *filename, const char *code, int h
     state = (spidermonkey_state *) JS_GetContextPrivate(vm->context);
     if (state->error == NULL) {
       if (handle_retval) {
+        JS::RootedString str(vm->context, JS::ToString(vm->context, result));
+        char *buf = JS_EncodeStringToUTF8(vm->context, str);
         if (result.isString()) {
-          JS::RootedString str(vm->context, JS::ToString(vm->context, result));
-          char *buf = JS_EncodeStringToUTF8(vm->context, str);
           retval = copy_string(buf);
-          JS_free(vm->context, buf);
         }
         else {
-          JS::RootedString str(vm->context, JS::ToString(vm->context, result));
-          char *tmp = JS_EncodeStringToUTF8(vm->context, str);
-	  if(strcmp(tmp, "undefined") == 0) {
+	  if(strcmp(buf, "undefined") == 0) {
             retval = copy_string("{\"error\": \"Expression returned undefined\", \"lineno\": 0, \"source\": \"unknown\"}");
 	  }
 	  else {
             retval = copy_string("{\"error\": \"non-JSON return value\", \"lineno\": 0, \"source\": \"unknown\"}");
 	  }
-	  JS_free(vm->context, tmp);
         }
+	JS_free(vm->context, buf);
       }
     }
     else {
