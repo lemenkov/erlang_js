@@ -88,6 +88,7 @@ bool on_branch(JSContext *context) {
     JS_MaybeGC(context);
   }
 
+  JS_SetContextPrivate(context, state);
   return return_value;
 }
 
@@ -187,7 +188,7 @@ void sm_stop(spidermonkey_vm *vm) {
   //Now we should be free to proceed with
   //freeing up memory without worrying about
   //crashing the VM.
-  if (state != NULL) {
+  if (state != NULL) { // FIXME is it really possible that state could ne NULL?
     if (state->error != NULL) {
       free_error(state);
     }
