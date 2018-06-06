@@ -22,19 +22,126 @@
 #include "driver_comm.h"
 #include "spidermonkey.h"
 
-typedef struct _spidermonkey_error_t {
-  unsigned int lineno;
-  char *msg;
-  char *offending_source;
-} spidermonkey_error;
+void* operator new(size_t size)
+{
+  void *p = driver_alloc((ErlDrvSizeT)size);
+  return p;
+};
 
-typedef struct _spidermonkey_state_t {
-  int branch_count;
-  spidermonkey_error *error;
-  int terminate;
-} spidermonkey_state;
+void operator delete(void* ptr)
+{
+  driver_free(ptr);
+};
 
-void free_error(spidermonkey_state *state);
+char *copy_string(const char *source) {
+  size_t size = strlen(source);
+  char *retval = (char*)ejs_alloc(size + 1);
+  strncpy(retval, source, size + 1);
+  return retval;
+}
+
+char *escape_quotes(char *text) {
+  size_t bufsize = strlen(text) * 2;
+  char *buf = (char*)ejs_alloc(bufsize);
+  memset(buf, 0, bufsize);
+  int i = 0;
+  int x = 0;
+  int escaped = 0;
+  for (i = 0; i < (int)strlen(text); i++) {
+    if (text[i] == '"') {
+      if(!escaped) {
+        memcpy(&buf[x], (char *) "\\\"", 2);
+        x += 2;
+      }
+      else {
+        memcpy(&buf[x], &text[i], 1);
+        x++;
+      }
+    }
+    else {
+      if(text[i] =='\\') {
+        escaped = 1;
+      }
+      else {
+        escaped = 0;
+      }
+      memcpy(&buf[x], &text[i], 1);
+      x++;
+    }
+  }
+  size_t buf_size = strlen(buf);
+  char *retval = (char*)ejs_alloc(buf_size + 1);
+  strncpy(retval, buf, buf_size);
+  retval[buf_size] = '\0';
+  driver_free(buf);
+  return retval;
+}
+
+class spidermonkey_error {
+  public:
+    spidermonkey_error(const char* m, unsigned int l, const char* os)
+    {
+      if (m == nullptr)
+        msg = copy_string("undefined error");
+      else
+        msg = copy_string(m);
+      lineno = l;
+      if (os == nullptr)
+        offending_source = copy_string("unknown");
+      else
+        offending_source = copy_string(os);
+    };
+    ~spidermonkey_error()
+    {
+      delete msg;
+      delete offending_source;
+    };
+    char* to_json()
+    {
+      char *escaped_source = escape_quotes(offending_source);
+      /* size = length(escaped source) + length(msg) + JSON formatting */
+      size_t size = strlen(escaped_source) + strlen(msg) + 80;
+      char *retval = (char*)ejs_alloc(size);
+
+      snprintf(retval, size, "{\"error\": {\"lineno\": %d, \"message\": \"%s\", \"source\": \"%s\"}}", lineno, msg, escaped_source);
+      driver_free(escaped_source);
+
+      return retval;
+    };
+  private:
+    unsigned int lineno;
+    char *msg;
+    char *offending_source;
+};
+
+class spidermonkey_state {
+  public:
+    int branch_count = 0;
+    spidermonkey_error *error = nullptr;
+    int terminate = 0;
+    spidermonkey_state() {};
+    ~spidermonkey_state()
+    {
+      free_error();
+    };
+    void replace_error(const char* m, unsigned int l = 0, const char* os = nullptr)
+    {
+      free_error();
+      error = new spidermonkey_error(m, l, os);
+    };
+    char* error_to_json()
+    {
+      char* retval = error->to_json();
+      free_error();
+      return retval;
+    };
+  private:
+    void free_error()
+    {
+      delete error;
+      error = nullptr;
+    };
+};
 
 /* The class of the global object. */
 static JSClass global_class = {
@@ -42,32 +149,10 @@ static JSClass global_class = {
     nullptr, nullptr, JS_PropertyStub, JS_StrictPropertyStub
 };
 
-char *copy_string(const char *source) {
-  size_t size = strlen(source);
-  char *retval = (char*)ejs_alloc(size + 1);
-  strncpy(retval, source, size);
-  retval[size] = '\0';
-  return retval;
-}
-
 void on_error(JSContext *context, const char *message, JSErrorReport *report) {
   if (report->flags & JSREPORT_EXCEPTION) {
-    spidermonkey_error *sm_error = (spidermonkey_error *)ejs_alloc(sizeof(spidermonkey_error));
-    if (message != NULL) {
-      sm_error->msg = copy_string(message);
-    }
-    else {
-      sm_error->msg = copy_string("undefined error");
-    }
-    sm_error->lineno = report->lineno;
-    if (report->linebuf != NULL) {
-      sm_error->offending_source = copy_string(report->linebuf);
-    }
-    else {
-      sm_error->offending_source = copy_string("unknown");
-    }
     spidermonkey_state *state = (spidermonkey_state *) JS_GetContextPrivate(context);
-    state->error = sm_error;
+    state->replace_error(message, report->lineno, report->linebuf);
     JS_SetContextPrivate(context, state);
   }
 }
@@ -132,10 +217,7 @@ bool js_log(JSContext *cx, unsigned argc, jsval *vp) {
 
 spidermonkey_vm *sm_initialize(long thread_stack, long heap_size) {
   spidermonkey_vm *vm = (spidermonkey_vm *)ejs_alloc(sizeof(spidermonkey_vm));
-  spidermonkey_state *state = (spidermonkey_state *)ejs_alloc(sizeof(spidermonkey_state));
-  state->branch_count = 0;
-  state->error = NULL;
-  state->terminate = 0;
+  spidermonkey_state *state = new spidermonkey_state;
   int gc_size = (int) heap_size * 0.25;
 
   JS_Init();
@@ -171,7 +253,7 @@ spidermonkey_vm *sm_initialize(long thread_stack, long heap_size) {
 }
 
 void sm_stop(spidermonkey_vm *vm) {
-  vm->global = NULL;
+  vm->global = nullptr;
   JS_BeginRequest(vm->context);
   spidermonkey_state *state = (spidermonkey_state *) JS_GetContextPrivate(vm->context);
   state->terminate = 1;
@@ -188,12 +270,7 @@ void sm_stop(spidermonkey_vm *vm) {
   //Now we should be free to proceed with
   //freeing up memory without worrying about
   //crashing the VM.
-  if (state != NULL) { // FIXME is it really possible that state could ne NULL?
-    if (state->error != NULL) {
-      free_error(state);
-    }
-    driver_free(state);
-  }
+  delete state;
   JS_SetContextPrivate(vm->context, NULL);
   //JS_DestroyContext(vm->context);
   //JS_DestroyRuntime(vm->runtime);
@@ -204,74 +281,16 @@ void sm_shutdown(void) {
   JS_ShutDown();
 }
 
-char *escape_quotes(char *text) {
-  size_t bufsize = strlen(text) * 2;
-  char *buf = (char*)ejs_alloc(bufsize);
-  memset(buf, 0, bufsize);
-  int i = 0;
-  int x = 0;
-  int escaped = 0;
-  for (i = 0; i < (int)strlen(text); i++) {
-    if (text[i] == '"') {
-      if(!escaped) {
-        memcpy(&buf[x], (char *) "\\\"", 2);
-        x += 2;
-      }
-      else {
-        memcpy(&buf[x], &text[i], 1);
-        x++;
-      }
-    }
-    else {
-      if(text[i] =='\\') {
-        escaped = 1;
-      }
-      else {
-        escaped = 0;
-      }
-      memcpy(&buf[x], &text[i], 1);
-      x++;
-    }
-  }
-  size_t buf_size = strlen(buf);
-  char *retval = (char*)ejs_alloc(buf_size + 1);
-  strncpy(retval, buf, buf_size);
-  retval[buf_size] = '\0';
-  driver_free(buf);
-  return retval;
-}
-
-char *error_to_json(const spidermonkey_error *error) {
-  char *escaped_source = escape_quotes(error->offending_source);
-  /* size = length(escaped source) + length(error msg) + JSON formatting */
-  size_t size = strlen(escaped_source) + strlen(error->msg) + 80;
-  char *retval = (char*)ejs_alloc(size);
-
-  snprintf(retval, size, "{\"error\": {\"lineno\": %d, \"message\": \"%s\", \"source\": \"%s\"}}",
-           error->lineno, error->msg, escaped_source);
-  driver_free(escaped_source);
-  return retval;
-}
-
-void free_error(spidermonkey_state *state) {
-  driver_free(state->error->offending_source);
-  driver_free(state->error->msg);
-  driver_free(state->error);
-  state->error = NULL;
-}
-
 char *sm_eval(spidermonkey_vm *vm, const char *filename, const char *code, int handle_retval) {
-  char *retval = NULL;
+  char *retval = nullptr;
 
-  if (code == NULL) {
-      return NULL;
-  }
+  if (code == nullptr)
+      return nullptr;
 
+  JS_BeginRequest(vm->context);
 
   JSAutoCompartment ac(vm->context, vm->global);
   JSAutoRequest ar(vm->context);
-
-  JS_BeginRequest(vm->context);
 
   JS::RootedObject obj(vm->context, vm->global);
   JS::CompileOptions options(vm->context);
@@ -280,18 +299,16 @@ char *sm_eval(spidermonkey_vm *vm, const char *filename, const char *code, int h
 	  .setFileAndLine(filename, 1)
 	  .setCompileAndGo(true);
 
-
   JS::RootedScript script(vm->context);
   JS::Compile(vm->context, obj, options, code, strlen(code), &script);
 
-
   spidermonkey_state *state = (spidermonkey_state *) JS_GetContextPrivate(vm->context);
-  if (state->error == NULL) {
+  if (state->error == nullptr) {
     JS::RootedValue result(vm->context);
     JS_ClearPendingException(vm->context);
     JS_ExecuteScript(vm->context, vm->global, script, &result);
     state = (spidermonkey_state *) JS_GetContextPrivate(vm->context);
-    if (state->error == NULL) {
+    if (state->error == nullptr) {
       if (handle_retval) {
         JS::RootedString str(vm->context, JS::ToString(vm->context, result));
         char *buf = JS_EncodeStringToUTF8(vm->context, str);
@@ -300,26 +317,29 @@ char *sm_eval(spidermonkey_vm *vm, const char *filename, const char *code, int h
         }
         else {
 	  if(strcmp(buf, "undefined") == 0) {
-            retval = copy_string("{\"error\": \"Expression returned undefined\", \"lineno\": 0, \"source\": \"unknown\"}");
+            state->replace_error("Expression returned undefined");
+            retval = state->error_to_json();
+            JS_SetContextPrivate(vm->context, state);
 	  }
 	  else {
-            retval = copy_string("{\"error\": \"non-JSON return value\", \"lineno\": 0, \"source\": \"unknown\"}");
+            state->replace_error("non-JSON return value");
+            retval = state->error_to_json();
+            JS_SetContextPrivate(vm->context, state);
 	  }
         }
 	JS_free(vm->context, buf);
       }
     }
     else {
-      retval = error_to_json(state->error);
-      free_error(state);
+      retval = state->error_to_json();
       JS_SetContextPrivate(vm->context, state);
     }
   }
   else {
-    retval = error_to_json(state->error);
-    free_error(state);
+    retval = state->error_to_json();
     JS_SetContextPrivate(vm->context, state);
   }
   JS_EndRequest(vm->context);
+
   return retval;
 }
